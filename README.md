@@ -140,7 +140,7 @@ SW2# show dtp interface e0/3
 
 ### Topología
 
-![topologia](PEGA_IMAGEN_AQUI)
+<img width="896" height="720" alt="image" src="https://github.com/user-attachments/assets/bc7c7d6c-6e68-4c77-9cb0-6050226058c2" />
 
 ### Tabla de Direccionamiento
 
