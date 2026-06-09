@@ -1,6 +1,6 @@
 # Ataque DTP VLAN Hopping — Negociación de Trunk
 
-**Nombre:** Henry Vicente Quezada | **Matrícula:** 2025-1332 | **Fecha:** 12de Junio 2026
+**Nombre:** Henry Vicente Quezada | **Matrícula:** 2025-1332 | **Fecha:** 12 de Junio 2026
 
 ---
 
