@@ -462,12 +462,11 @@ Esperado: `Negotiation of Trunking: Off`, `Operational Mode: static access` — 
 
 | Etapa | Captura |
 | ----- | ------- |
-| Antes del ataque — `show interfaces e0/3 switchport` (static access) |<img width="485" height="400" alt="image" src="https://github.com/user-attachments/assets/33103cdc-3b16-4e5d-9439-879dea50f46d" />
- |
+| Antes del ataque — `show interfaces e0/3 switchport` (static access) |<img width="485" height="400" alt="image" src="https://github.com/user-attachments/assets/33103cdc-3b16-4e5d-9439-879dea50f46d" />|
 | Script en ejecución — frames DTP enviados |  
-| Durante el ataque — `show interfaces e0/3 trunk` (Operational Mode: trunk) | ![durante](URL_IMAGEN) |
-| Captura tcpdump con tráfico VLAN 10/20/99 | ![tcpdump](URL_IMAGEN) |
-| Contramedida aplicada — `Negotiation of Trunking: Off` | ![contramedida](URL_IMAGEN) |
+| Durante el ataque — `show interfaces e0/3 trunk` (Operational Mode: trunk) | <img width="561" height="455" alt="image" src="https://github.com/user-attachments/assets/aa63b427-3670-4f64-a968-df4f397f5d05" />|
+| Captura tcpdump con tráfico VLAN 10/20/99 | <img width="493" height="403" alt="image" src="https://github.com/user-attachments/assets/fc1808b6-22a4-4635-86fc-beb7698d652d" />|
+| Contramedida aplicada — `Negotiation of Trunking: Off` | <img width="493" height="409" alt="image" src="https://github.com/user-attachments/assets/1b7d5a0a-abb3-41a5-b807-1a0a1f03a3bd" />|
 
 ---
 
