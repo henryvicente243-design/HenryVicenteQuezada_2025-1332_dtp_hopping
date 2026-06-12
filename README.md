@@ -500,17 +500,3 @@ SW1# show dtp interface e0/3
 **Explicación:** `switchport nonegotiate` deshabilita el envío y respuesta de tramas DTP en el puerto. Aunque el modo administrativo siga siendo `access`, el switch ya no participa en negociaciones DTP, por lo que ningún dispositivo externo puede forzar la conversión del puerto a trunk, eliminando el vector de VLAN Hopping vía DTP.
 
 ---
-
-## 8. Estructura del Repositorio
-
-```
-.
-├── README.md
-├── HenryVicenteQuezada_2025-1332_dtp_hopping.py
-└── capturas/
-    ├── antes.png
-    ├── ejecucion_script.png
-    ├── durante_trunk.png
-    ├── tcpdump_vlans.png
-    └── contramedida.png
-```
